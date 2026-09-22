@@ -28,7 +28,11 @@ dotnet run --project src/Cli
 ## Запуск
 
 dotnet build
+
+
 dotnet run --project src/Cli
+
+
 
 dotnet publish src/Cli -c Release -r osx-arm64 --self-contained true
 
@@ -38,7 +42,7 @@ dotnet publish src/Cli -c Release -r osx-arm64 --self-contained true -p:PublishS
 
 dotnet publish src/Cli -c Release -r osx-arm64 --self-contained true -p:PublishTrimmed=true
 
-
+```
 └── CrossApp
     ├── CrossApp.slnx
     ├── README.md
@@ -52,7 +56,7 @@ dotnet publish src/Cli -c Release -r osx-arm64 --self-contained true -p:PublishT
             ├── Dto
             ├── EnvironmentInfo.cs
             └── Storage
-
+```
 
 | RID       | Режим               | Розмір | Потрібен Runtime | Кількість файлів |
 | --------- | ------------------- | ------ | ---------------- | ---------------- |
