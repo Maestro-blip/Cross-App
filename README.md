@@ -64,3 +64,29 @@ dotnet publish src/Cli -c Release -r osx-arm64 --self-contained true -p:PublishT
 | osx-arm64 | framework-dependent | 172 Kb | так              | 7                |
 | osx-arm64 | PublishSingleFile   | 76 Mb  | ні               | 3                |
 | osx-arm64 | PublishTrimmed      | 20 Mb  | ні               | 31               |
+
+### Лаб 3
+
+## Запуск
+
+dotnet run --project src/Cli -f net10.0
+
+dotnet run --project src/Cli -f net10.0 -- data/sample.csv
+
+dotnet run --project src/Cli -f net10.0 -- data/sample.json
+
+dotnet run --project src/Cli -f net10.0 -- --catalog data/catalog.csv
+
+## Формат файлу data/sample.csv
+
+- Роздільник: `;` (константа `Separator` у `ProductCsvImporter`)
+- Колонки: `id;sku;name;unit;quantity`
+- Заголовок у першому рядку необов'язковий
+- Кодування: UTF-8
+- Рядки 12-14 пошкоджені навмисно (тестові дані): мало колонок, нечислова кількість, порожній SKU
+
+## Додаткові завдання
+
+1. `data/sample.json` – JSON-імпортер `ProductJsonImporter`, Cli обирає імпортер за розширенням файлу.
+2. `data/catalog.csv` – різнорідні рядки: `P;id;sku;name;unit;quantity` – товари, `W;id;name;city` – склади.
+3. Статистика імпорту одним рядком: усього / прийнято / пропущено / % помилок.
