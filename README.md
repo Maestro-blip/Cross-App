@@ -90,3 +90,69 @@ dotnet run --project src/Cli -f net10.0 -- --catalog data/catalog.csv
 1. `data/sample.json` – JSON-імпортер `ProductJsonImporter`, Cli обирає імпортер за розширенням файлу.
 2. `data/catalog.csv` – різнорідні рядки: `P;id;sku;name;unit;quantity` – товари, `W;id;name;city` – склади.
 3. Статистика імпорту одним рядком: усього / прийнято / пропущено / % помилок.
+
+### Лаб 4
+
+Доменна модель: сутності, інваріанти, інкапсуляція.
+
+## Запуск
+
+dotnet run --project src/Cli -f net10.0 -- --domain
+
+dotnet run --project src/Cli -f net10.0 -- --domain-import data/domain.json
+
+dotnet run --project src/Cli -f net10.0 -- --warehouse
+
+dotnet run --project src/Cli -f net10.0 -- --movement
+
+Інші режими: `--env` / `--json` (лаб 1-2), `--catalog [файл]` і `[файл.csv|файл.json]` (лаб 3).
+
+```
+src/Core/
+├── Dto/                     ProductDto, WarehouseDto, ImportResult – формат даних
+├── Domain/
+│   ├── Product.cs           товар із залишком: Create, RegisterArrival, Issue, ToDto/FromDto
+│   ├── Warehouse.cs         склад із місткістю
+│   └── Movement.cs          накладна: MovementStatus, MovementLine, переходи станів
+├── Import/
+│   └── ProductDomainImporter.cs   ImportResult<ProductDto> -> ImportResult<Product>
+└── Services/
+    └── StockService.cs      правило, що охоплює Product + Warehouse
+```
+
+## Сутності
+
+- `Product` – товар із залишком. Залишок у приватному полі `_quantity`, змінюється лише через `RegisterArrival` і `Issue`.
+- `Warehouse` – склад з місткістю `Capacity` (максимальна сумарна кількість одиниць).
+- `Movement` – накладна приходу/видачі з рядками `MovementLine(Product, Amount)` і станом `MovementStatus`.
+- `StockService` – знає, який товар на якому складі, і перевіряє місткість.
+
+## Інваріанти
+
+| Правило | Тип винятку | Де перевіряється |
+| --- | --- | --- |
+| Id товару не порожній | ArgumentException | `Product.Create` |
+| SKU не порожній (зберігається у верхньому регістрі) | ArgumentException | `Product.Create` |
+| Назва та одиниця виміру не порожні | ArgumentException | `Product.Create` |
+| Початковий залишок не від'ємний | ArgumentOutOfRangeException | `Product.Create` |
+| Кількість приходу / видачі > 0 | ArgumentOutOfRangeException | `Product.RegisterArrival`, `Product.Issue` |
+| Не можна видати більше, ніж є на залишку | InvalidOperationException | `Product.Issue` |
+| `FromDto` проходить ті самі перевірки | як у `Create` | `Product.FromDto` -> `Create` |
+| Id і назва складу не порожні, місткість > 0 | ArgumentException / ArgumentOutOfRangeException | `Warehouse.Create` |
+| Сумарний залишок на складі ≤ місткості складу | InvalidOperationException | `StockService.Place`, `StockService.RegisterArrival` |
+| Товар розміщено лише на одному складі | InvalidOperationException | `StockService.Place` |
+| Прихід через сервіс лише для розміщеного товару | InvalidOperationException | `StockService.RegisterArrival` |
+| Номер накладної не порожній | ArgumentException | `Movement.Create` |
+| Кількість у рядку > 0, товар у накладній не повторюється | ArgumentOutOfRangeException / InvalidOperationException | `Movement.AddLine` |
+| Рядки додаються лише в стані Draft | InvalidOperationException | `Movement.AddLine` |
+| Порожню накладну провести не можна | InvalidOperationException | `Movement.Post` |
+| Дозволені лише переходи Draft->Posted, Draft->Cancelled, Posted->Cancelled | InvalidOperationException | `Movement.CanTransition` (switch expression) |
+| Проведення «все або нічого»: перевитрата за будь-яким рядком блокує всю накладну | InvalidOperationException | `Movement.Post` / `Movement.Cancel` |
+
+Перевірка: у `src/Core/Domain` і `src/Core/Services` немає `Console.` і `File.`; `product.Quantity = -5` не компілюється (CS0200).
+
+## Додаткові завдання
+
+1. `ProductDomainImporter.Convert` – бере `ImportResult<ProductDto>` і повертає `ImportResult<Product>`: сутності + рядки, що не пройшли інваріанти (`--domain-import`, дані `data/domain.json`).
+2. Інваріант двох сутностей: «сумарний залишок товарів на складі не перевищує місткість складу» (`StockService`, `--warehouse`). Ні `Product`, ні `Warehouse` окремо не мають даних для перевірки: товар не знає про інші товари складу, склад не зберігає залишки. Тому правило винесено в сервіс, який бачить обидві сутності; на тижні 5 він отримуватиме їх зі сховищ.
+3. `enum MovementStatus { Draft, Posted, Cancelled }` і таблиця допустимих переходів через switch expression по кортежу `(from, to)` у `Movement.CanTransition` (`--movement`). Скасування проведеної накладної повертає залишки назад.
