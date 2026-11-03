@@ -19,9 +19,9 @@ return args switch
     ["--movement", ..] => RunMovement(),
     ["--catalog", ..] => RunCatalog(PathArg(Path.Combine("data", "catalog.csv"))),
     ["--import", ..] => RunImport(PathArg(Path.Combine("data", "sample.csv"))),
-    ["--file", ..] => RunService(useFile: true),
+    ["--file" or "--cache", ..] => RunService(args),
     [var path, ..] => RunImport(path),
-    [] => RunService(useFile: false)
+    [] => RunService(args)
 };
 
 string PathArg(string fallback) => args.Length > 1 ? args[1] : fallback;
@@ -215,20 +215,19 @@ static int RunMovement()
 }
 
 // Лаб 5: сервісний шар, два сховища, ручний DI.
-// dotnet run --project src/Cli            → useFile = false
-// dotnet run --project src/Cli -- --file  → useFile = true
-static int RunService(bool useFile)
+// dotnet run --project src/Cli                    → InMemoryCatalogStore
+// dotnet run --project src/Cli -- --file          → FileCatalogStore
+// dotnet run --project src/Cli -- --cache [--file] → те саме, загорнуте в CachingCatalogStore
+static int RunService(string[] options)
 {
-    // Composition root: єдине місце, де створюються конкретні класи.
-    string dataPath = Path.Combine(AppContext.BaseDirectory, "data", "catalog.json");
-    ICatalogStore store = useFile
-        ? new FileCatalogStore(dataPath)
-        : new InMemoryCatalogStore(SampleData.Products());
+    // Composition root: конкретні класи обирає StoreFactory (додаткове завдання 3),
+    // сервіс отримує лише інтерфейс.
+    ICatalogStore store = StoreFactory.Create(options);
     var service = new CatalogService(store);
 
     Console.WriteLine($"Сховище: {store.GetType().Name}");
-    if (useFile)
-        Console.WriteLine($"Файл: {dataPath}");
+    if (options.Contains("--file"))
+        Console.WriteLine($"Файл: {StoreFactory.DataPath}");
 
     var created = service.Add("SKU-101", "Кабель UTP cat6", "м", 50);
     service.Receive(created.Id, 25);
@@ -240,6 +239,16 @@ static int RunService(bool useFile)
         Console.WriteLine($"  {p.Id,-9} {p.Sku,-13} {p.Name,-38} {p.Quantity,5} {p.Unit}");
 
     Console.WriteLine($"Пошук за id={created.Id}: {service.Find(created.Id)}");
+
+    // Додаткове завдання 2: умова пошуку — лямбда Func<Product, bool>.
+    var lowStock = service.Search(p => p.Quantity < 10);
+    Console.WriteLine($"Пошук «залишок < 10»: {string.Join(", ", lowStock.Select(p => $"{p.Sku} ({p.Quantity})"))}");
+    var tech = service.Search(p => p.Sku.StartsWith("TECH", StringComparison.OrdinalIgnoreCase));
+    Console.WriteLine($"Пошук «SKU починається з TECH»: {tech.Count} шт.");
+
+    // Додаткове завдання 1: статистика декоратора, якщо його увімкнено.
+    if (store is CachingCatalogStore cache)
+        Console.WriteLine($"Кеш: читань внутрішнього сховища {cache.InnerReads}, відповідей з кешу {cache.CacheHits}");
 
     Console.WriteLine("Сценарій відмови:");
     TryDo("прихід для неіснуючого id", () => service.Receive("NO-SUCH", 5));

@@ -35,4 +35,11 @@ public sealed class CatalogService(ICatalogStore store)
     public IReadOnlyList<Product> All() => _store.GetAll();
 
     public Product? Find(string id) => _store.GetById(id);
+
+    // Додаткове завдання 2: умову пошуку передає той, хто викликає. Контракт сховища не розширюється.
+    public IReadOnlyList<Product> Search(Func<Product, bool> predicate)
+    {
+        ArgumentNullException.ThrowIfNull(predicate);
+        return _store.GetAll().Where(predicate).ToList();
+    }
 }

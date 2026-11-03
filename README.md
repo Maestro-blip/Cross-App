@@ -162,10 +162,12 @@ src/Core/
 - Інтерфейс сховища: `ICatalogStore` (`src/Core/Abstraction`): `GetAll`, `GetById`, `Add`, `Update`, `Delete`.
 - Реалізації: `InMemoryCatalogStore` (словник у пам'яті, стартові дані з `SampleData`) і `FileCatalogStore` (JSON-файл `data/catalog.json` поруч зі зібраною програмою, кеш + запис після кожної зміни).
 - Сервіс: `CatalogService` (`Add`, `Receive`, `Issue`, `All`, `Find`), отримує `ICatalogStore` через конструктор.
-- Composition root: `src/Cli/Program.cs`, метод `RunService`.
+- Composition root: `src/Cli/Program.cs` (`RunService`) + `src/Cli/StoreFactory.cs`.
+- Додатково: декоратор `CachingCatalogStore` (`--cache`), пошук `CatalogService.Search(Func<Product, bool>)`, фабрика `StoreFactory.Create(args)`.
 
 ```
 dotnet run --project src/Cli --framework net10.0            # InMemoryCatalogStore
 dotnet run --project src/Cli --framework net10.0 -- --file  # FileCatalogStore
+dotnet run --project src/Cli --framework net10.0 -- --cache --file  # FileCatalogStore у декораторі-кеші
 dotnet run --project src/Cli --framework net10.0 -- --import # імпорт з лаби 3
 ```
