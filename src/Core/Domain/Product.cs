@@ -1,3 +1,5 @@
+
+using Core.Domain;
 namespace Core.Domain;
 
 using Core.Dto;

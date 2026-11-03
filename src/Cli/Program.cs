@@ -4,6 +4,8 @@ using Core.Domain;
 using Core.Dto;
 using Core.Import;
 using Core.Services;
+using Core.Abstraction;
+using Core.Storage;
 
 Console.OutputEncoding = System.Text.Encoding.UTF8;
 
@@ -16,8 +18,10 @@ return args switch
     ["--warehouse", ..] => RunWarehouse(),
     ["--movement", ..] => RunMovement(),
     ["--catalog", ..] => RunCatalog(PathArg(Path.Combine("data", "catalog.csv"))),
+    ["--import", ..] => RunImport(PathArg(Path.Combine("data", "sample.csv"))),
+    ["--file", ..] => RunService(useFile: true),
     [var path, ..] => RunImport(path),
-    [] => RunImport(Path.Combine("data", "sample.csv"))
+    [] => RunService(useFile: false)
 };
 
 string PathArg(string fallback) => args.Length > 1 ? args[1] : fallback;
@@ -83,9 +87,12 @@ static int RunDomain()
     Console.WriteLine(product);
     product.RegisterArrival(50);
     product.Issue(30);
+    Console.WriteLine("212313-----------------------");
     Console.WriteLine(product);
-
+    TryDo("Перевірка інваріанту", () => product.RegisterArrival(-3));
     Console.WriteLine();
+    Console.WriteLine(product);
+    Console.WriteLine("323232-----------------------");
     Console.WriteLine("=== Сценарій 2: порушення інваріантів ===");
     TryDo("видача більша за залишок", () => product.Issue(1000));
     TryDo("нульовий прихід", () => product.RegisterArrival(0));
@@ -204,6 +211,39 @@ static int RunMovement()
     tooMuch.AddLine(sand, 999);
     TryDo("видача понад залишок", tooMuch.Post);
     Console.WriteLine($"{tooMuch}; {cement.Sku} = {cement.Quantity} (перший рядок теж не списано)");
+    return 0;
+}
+
+// Лаб 5: сервісний шар, два сховища, ручний DI.
+// dotnet run --project src/Cli            → useFile = false
+// dotnet run --project src/Cli -- --file  → useFile = true
+static int RunService(bool useFile)
+{
+    // Composition root: єдине місце, де створюються конкретні класи.
+    string dataPath = Path.Combine(AppContext.BaseDirectory, "data", "catalog.json");
+    ICatalogStore store = useFile
+        ? new FileCatalogStore(dataPath)
+        : new InMemoryCatalogStore(SampleData.Products());
+    var service = new CatalogService(store);
+
+    Console.WriteLine($"Сховище: {store.GetType().Name}");
+    if (useFile)
+        Console.WriteLine($"Файл: {dataPath}");
+
+    var created = service.Add("SKU-101", "Кабель UTP cat6", "м", 50);
+    service.Receive(created.Id, 25);
+    service.Issue(created.Id, 10);
+    Console.WriteLine($"Додано {created.Id}, прихід 25, видача 10 → залишок {created.Quantity} {created.Unit}");
+
+    Console.WriteLine($"Список ({service.All().Count}):");
+    foreach (Product p in service.All())
+        Console.WriteLine($"  {p.Id,-9} {p.Sku,-13} {p.Name,-38} {p.Quantity,5} {p.Unit}");
+
+    Console.WriteLine($"Пошук за id={created.Id}: {service.Find(created.Id)}");
+
+    Console.WriteLine("Сценарій відмови:");
+    TryDo("прихід для неіснуючого id", () => service.Receive("NO-SUCH", 5));
+    TryDo("видача понад залишок", () => service.Issue(created.Id, 1000));
     return 0;
 }
 

@@ -156,3 +156,16 @@ src/Core/
 1. `ProductDomainImporter.Convert` – бере `ImportResult<ProductDto>` і повертає `ImportResult<Product>`: сутності + рядки, що не пройшли інваріанти (`--domain-import`, дані `data/domain.json`).
 2. Інваріант двох сутностей: «сумарний залишок товарів на складі не перевищує місткість складу» (`StockService`, `--warehouse`). Ні `Product`, ні `Warehouse` окремо не мають даних для перевірки: товар не знає про інші товари складу, склад не зберігає залишки. Тому правило винесено в сервіс, який бачить обидві сутності; на тижні 5 він отримуватиме їх зі сховищ.
 3. `enum MovementStatus { Draft, Posted, Cancelled }` і таблиця допустимих переходів через switch expression по кортежу `(from, to)` у `Movement.CanTransition` (`--movement`). Скасування проведеної накладної повертає залишки назад.
+
+### Лаб 5: сервісний шар, два сховища, ручний DI
+
+- Інтерфейс сховища: `ICatalogStore` (`src/Core/Abstraction`): `GetAll`, `GetById`, `Add`, `Update`, `Delete`.
+- Реалізації: `InMemoryCatalogStore` (словник у пам'яті, стартові дані з `SampleData`) і `FileCatalogStore` (JSON-файл `data/catalog.json` поруч зі зібраною програмою, кеш + запис після кожної зміни).
+- Сервіс: `CatalogService` (`Add`, `Receive`, `Issue`, `All`, `Find`), отримує `ICatalogStore` через конструктор.
+- Composition root: `src/Cli/Program.cs`, метод `RunService`.
+
+```
+dotnet run --project src/Cli --framework net10.0            # InMemoryCatalogStore
+dotnet run --project src/Cli --framework net10.0 -- --file  # FileCatalogStore
+dotnet run --project src/Cli --framework net10.0 -- --import # імпорт з лаби 3
+```
