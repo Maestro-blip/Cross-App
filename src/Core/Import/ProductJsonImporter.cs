@@ -5,7 +5,7 @@ namespace Core.Import;
 
 public static class ProductJsonImporter
 {
-    public static ImportResult<ProductDto> Load(string path)
+    public static ImportResult<ProductDto> Load(string path, Action<string>? onSkipped = null)
     {
         string json = File.ReadAllText(path);
 
@@ -17,7 +17,9 @@ public static class ProductJsonImporter
         }
         catch (JsonException ex)
         {
-            return new ImportResult<ProductDto>([], [$"некоректний JSON: {ex.Message}"]);
+            string message = $"некоректний JSON: {ex.Message}";
+            onSkipped?.Invoke(message);
+            return new ImportResult<ProductDto>([], [message]);
         }
     }
 }

@@ -6,6 +6,7 @@ using Core.Import;
 using Core.Services;
 using Core.Abstraction;
 using Core.Storage;
+using Core.Events;
 
 Console.OutputEncoding = System.Text.Encoding.UTF8;
 
@@ -19,9 +20,12 @@ return args switch
     ["--movement", ..] => RunMovement(),
     ["--catalog", ..] => RunCatalog(PathArg(Path.Combine("data", "catalog.csv"))),
     ["--import", ..] => RunImport(PathArg(Path.Combine("data", "sample.csv"))),
+    ["--service", ..] => RunService(args),
     ["--file" or "--cache", ..] => RunService(args),
+    ["--events", ..] => RunEvents(args),
+    ["--sinks", ..] => RunSinks(args),
     [var path, ..] => RunImport(path),
-    [] => RunService(args)
+    [] => RunEvents(args)
 };
 
 string PathArg(string fallback) => args.Length > 1 ? args[1] : fallback;
@@ -45,14 +49,23 @@ static int RunImport(string path)
         return 1;
     }
 
-    ImportResult<ProductDto> result = LoadDtos(path);
+    // Лаб 6, додаткове завдання 2: звіт про пропущені рядки приходить через Action<string>
+    // під час імпорту. Лямбда — замикання над лічильником skipped.
+    int skipped = 0;
+    Console.WriteLine("Пропущені рядки (повідомляє імпортер через Action<string>):");
+    ImportResult<ProductDto> result = LoadDtos(path, reason =>
+    {
+        skipped++;
+        Console.WriteLine($"  ! {reason}");
+    });
+    if (skipped == 0)
+        Console.WriteLine("  немає");
 
     Console.WriteLine($"Завантажено записів: {result.Items.Count}");
     foreach (ProductDto p in result.Items.Take(5))
         Console.WriteLine($"  {p.Id,-6} {p.Sku,-10} {p.Name,-26} {p.Quantity,5} {p.Unit}");
 
-    PrintErrors(result.Errors);
-    PrintStats(result.Items.Count, result.Errors.Count);
+    PrintStats(result.Items.Count, skipped);
     return 0;
 }
 
@@ -240,10 +253,10 @@ static int RunService(string[] options)
 
     Console.WriteLine($"Пошук за id={created.Id}: {service.Find(created.Id)}");
 
-    // Додаткове завдання 2: умова пошуку — лямбда Func<Product, bool>.
-    var lowStock = service.Search(p => p.Quantity < 10);
+    // Лаб 5, додаткове завдання 2 (у лаб 6 метод перейменовано на FindAll): умова — лямбда Func<Product, bool>.
+    var lowStock = service.FindAll(p => p.Quantity < 10);
     Console.WriteLine($"Пошук «залишок < 10»: {string.Join(", ", lowStock.Select(p => $"{p.Sku} ({p.Quantity})"))}");
-    var tech = service.Search(p => p.Sku.StartsWith("TECH", StringComparison.OrdinalIgnoreCase));
+    var tech = service.FindAll(p => p.Sku.StartsWith("TECH", StringComparison.OrdinalIgnoreCase));
     Console.WriteLine($"Пошук «SKU починається з TECH»: {tech.Count} шт.");
 
     // Додаткове завдання 1: статистика декоратора, якщо його увімкнено.
@@ -256,10 +269,110 @@ static int RunService(string[] options)
     return 0;
 }
 
-static ImportResult<ProductDto> LoadDtos(string path) => Path.GetExtension(path).ToLowerInvariant() switch
+// Лаб 6: доменні події, делегати Action/Func, лямбди.
+// dotnet run --project src/Cli -f net10.0 [-- --events [--file]]
+static int RunEvents(string[] options)
 {
-    ".json" => ProductJsonImporter.Load(path),
-    _ => ProductCsvImporter.Load(path)
+    // Журнал поруч зі зібраною програмою; каталог створюємо кодом (інакше DirectoryNotFoundException).
+    string logPath = Path.Combine(AppContext.BaseDirectory, "logs", "app.log");
+    Directory.CreateDirectory(Path.GetDirectoryName(logPath)!);
+
+    ICatalogStore store = StoreFactory.Create(options);
+    var service = new CatalogService(store);
+    Console.WriteLine($"Сховище: {store.GetType().Name}");
+    Console.WriteLine($"Журнал: {logPath}");
+    Console.WriteLine();
+
+    // Підписник 1 — локальна функція: має стале ім'я, тому її можна і підписати (+=), і відписати (-=).
+    // Не static: захоплює logPath із RunEvents (замикання).
+    void OnCatalogChanged(object? sender, CatalogChangedEventArgs e)
+    {
+        string line = $"{e.At:HH:mm:ss} {e.Kind,-8} {e.Id} {e.Delta,4:+0;-0} → залишок {e.QuantityAfter}";
+        Console.WriteLine(line);
+        try
+        {
+            File.AppendAllText(logPath, line + Environment.NewLine);
+        }
+        catch (IOException ex) // збій журналу не повинен ламати вже виконану операцію
+        {
+            Console.WriteLine($"  [журнал недоступний: {ex.Message}]");
+        }
+    }
+
+    // Підписник 2 — лямбда із замиканням над локальною змінною changes.
+    // Збережена у змінну, щоб наприкінці її теж можна було відписати.
+    int changes = 0;
+    EventHandler<CatalogChangedEventArgs> counter = (_, _) =>
+    {
+        changes++;
+        Console.WriteLine($"         └ підписник 2: changes = {changes}");
+    };
+
+    service.Changed += OnCatalogChanged; // викликається першим
+    service.Changed += counter;          // викликається другим — у порядку підписки
+
+    Console.WriteLine("=== Крок 5: операції з двома підписниками ===");
+    var created = service.Add("SKU-101", "Кабель UTP cat6", "м", 50);
+    service.Receive(created.Id, 25);
+    service.Issue(created.Id, 10);
+    Console.WriteLine($"Подій отримано: {changes}");
+
+    Console.WriteLine();
+    Console.WriteLine("=== Після service.Changed -= OnCatalogChanged ===");
+    service.Changed -= OnCatalogChanged;
+    service.Receive(created.Id, 5); // тиха для консолі/журналу: працює лише лічильник
+    Console.WriteLine($"Подій отримано: {changes}; залишок {created.Quantity} {created.Unit} (дані змінились, рядка журналу немає)");
+
+    Console.WriteLine();
+    Console.WriteLine("=== Крок 6: сценарій відмови — винятки є, подій немає ===");
+    int before = changes;
+    TryDo("від'ємний прихід", () => service.Receive(created.Id, -5));
+    TryDo("неіснуючий id", () => service.Receive("NO-SUCH", 5));
+    TryDo("видача понад залишок", () => service.Issue(created.Id, 1000));
+    Console.WriteLine($"Подій отримано: {changes} (було {before}) — невдалі операції не дали повідомлень");
+
+    Console.WriteLine();
+    Console.WriteLine("=== Відписка лямбдою «в один рядок» не працює ===");
+    service.Changed -= (_, _) => changes++; // новий екземпляр делегата — у списку його немає
+    service.Issue(created.Id, 1);
+    Console.WriteLine($"Подій отримано: {changes} — лічильник досі підписаний");
+    service.Changed -= counter;             // той самий екземпляр — відписка спрацьовує
+    service.Issue(created.Id, 1);
+    Console.WriteLine($"Подій отримано: {changes} — після -= counter підписників немає, Changed == null");
+
+    Console.WriteLine();
+    Console.WriteLine("=== Крок 7: Func замість події, коли потрібна відповідь ===");
+    IReadOnlyList<Product> low = service.FindAll(p => p.Quantity < 10);
+    Console.WriteLine($"FindAll(p => p.Quantity < 10): {low.Count} шт.");
+    foreach (Product p in low)
+        Console.WriteLine($"  {p.Id,-9} {p.Sku,-13} {p.Name,-30} {p.Quantity,4} {p.Unit}");
+    return 0;
+}
+
+// Лаб 6, додаткове завдання 1: ті самі повідомлення через INotificationSink, переданий у конструктор
+// (ручний DI). Подія Changed тут не використовується.
+// dotnet run --project src/Cli -f net10.0 -- --sinks [--file]
+static int RunSinks(string[] options)
+{
+    ChangeLog.EnsureDirectory();
+    ICatalogStore store = StoreFactory.Create(options);
+    INotificationSink sink = new CompositeSink(new ConsoleSink(), new FileSink(ChangeLog.Path));
+    var service = new CatalogService(store, sink);
+
+    Console.WriteLine($"Сховище: {store.GetType().Name}; одержувач: {sink.GetType().Name}(ConsoleSink, FileSink)");
+    var created = service.Add("SKU-202", "Патч-корд 2м", "шт", 20);
+    service.Receive(created.Id, 10);
+    service.Issue(created.Id, 25);
+    service.Remove(created.Id);
+    TryDo("видача видаленого товару", () => service.Issue(created.Id, 1));
+    Console.WriteLine($"Журнал: {ChangeLog.Path}");
+    return 0;
+}
+
+static ImportResult<ProductDto> LoadDtos(string path, Action<string>? onSkipped = null) => Path.GetExtension(path).ToLowerInvariant() switch
+{
+    ".json" => ProductJsonImporter.Load(path, onSkipped),
+    _ => ProductCsvImporter.Load(path, onSkipped)
 };
 
 static void PrintWarehouse(StockService stock, Warehouse warehouse)

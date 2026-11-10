@@ -171,3 +171,21 @@ dotnet run --project src/Cli --framework net10.0 -- --file  # FileCatalogStore
 dotnet run --project src/Cli --framework net10.0 -- --cache --file  # FileCatalogStore у декораторі-кеші
 dotnet run --project src/Cli --framework net10.0 -- --import # імпорт з лаби 3
 ```
+
+### Лаб 6: доменні події, делегати Action/Func, лямбди
+
+- Подія: `CatalogService.Changed` типу `EventHandler<CatalogChangedEventArgs>`; піднімається приватним `OnChanged` лише після успішної зміни стану (`Add`, `Receive`, `Issue`, `Remove`).
+- Дані події: `src/Core/Events/CatalogChangeKind.cs` (`Added`, `Received`, `Issued`, `Removed`) і `CatalogChangedEventArgs.cs` (`Id`, `Kind`, `Delta`, `QuantityAfter`, `At`).
+- Підписники в `src/Cli/Program.cs` (`RunEvents`): локальна функція `OnCatalogChanged` (консоль + `logs/app.log`) і лямбда-лічильник із замиканням над `changes`; показано `-=` і невдалу відписку «новою» лямбдою.
+- Журнал: `Path.Combine(AppContext.BaseDirectory, "logs", "app.log")` → `src/Cli/bin/Debug/net10.0/logs/app.log`, каталог створюється кодом.
+- `Func<Product, bool>`: `CatalogService.FindAll` (у лаб 5 — `Search`).
+- Core не пише в консоль і у файл журналу (`grep -rn "Console\|logs" src/Core --include="*.cs"` — порожньо).
+- Додатково: `INotificationSink` (Core) + `ConsoleSink`, `FileSink`, `CompositeSink` (`src/Cli/Notifications`), передаються в `CatalogService` через конструктор (`--sinks`); `Action<string> onSkipped` в `ProductCsvImporter.Load` / `ProductJsonImporter.Load` для звіту про пропущені рядки.
+
+```
+dotnet run --project src/Cli -f net10.0                    # події (за замовчуванням), InMemory
+dotnet run --project src/Cli -f net10.0 -- --events --file # події, FileCatalogStore
+dotnet run --project src/Cli -f net10.0 -- --sinks         # INotificationSink замість події
+dotnet run --project src/Cli -f net10.0 -- data/sample.csv # імпорт з Action<string>
+dotnet run --project src/Cli -f net10.0 -- --service       # сценарій лаб 5
+```
