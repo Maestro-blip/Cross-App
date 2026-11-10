@@ -2,7 +2,9 @@ using Core.Domain;
 
 namespace Core;
 
-// Початкові товари (seed) для режиму в пам'яті; знадобляться також у лабі 7.
+// Початкові товари (seed) для режиму в пам'яті.
+// Лаб 7: 20 записів, 6 одиниць виміру (шт, м, пачка, кг, л, упаковка) і 7 позицій із залишком < 10,
+// щоб GroupBy показував кілька груп, а report-low не був порожнім.
 public static class SampleData
 {
     public static IReadOnlyList<Product> Products() =>
@@ -22,5 +24,23 @@ public static class SampleData
         Product.Create("P-013", "TECH-MOU-13", "Миша бездротова Razer", "шт", 21),
         Product.Create("P-014", "HOME-LAM-14", "Настільна LED лампа", "шт", 95),
         Product.Create("P-015", "HOME-BOT-15", "Термочашка Stanley 0.5л", "шт", 145),
+        Product.Create("P-016", "TECH-CAB-16", "Кабель UTP cat6 (бухта)", "м", 305),
+        Product.Create("P-017", "DRY-SUG-17", "Цукор білий", "кг", 40),
+        Product.Create("P-018", "HOME-CLN-18", "Засіб для миття посуду", "л", 7),
+        Product.Create("P-019", "DRY-COF-19", "Кава мелена 250г", "пачка", 9),
+        Product.Create("P-020", "TECH-CAB-20", "Кабель живлення ПВС 3x1.5", "м", 120),
     ];
+
+    private static readonly string[] Units = ["шт", "м", "пачка", "кг", "л", "упаковка"];
+
+    // Лаб 7, додаткове завдання 4: великий набір для вимірювання часу звітів.
+    // Фіксований seed — однакові дані при кожному запуску, тож заміри можна порівнювати.
+    public static IReadOnlyList<Product> Generate(int count, int seed = 42)
+    {
+        var random = new Random(seed);
+        var items = new List<Product>(count);
+        for (int i = 1; i <= count; i++)
+            items.Add(Product.Create($"G-{i:D6}", $"GEN-{i:D6}", $"Товар {i}", Units[random.Next(Units.Length)], random.Next(0, 500)));
+        return items;
+    }
 }

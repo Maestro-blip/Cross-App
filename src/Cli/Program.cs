@@ -7,11 +7,15 @@ using Core.Services;
 using Core.Abstraction;
 using Core.Storage;
 using Core.Events;
+using Core.Reports;
+using System.Diagnostics;
 
 Console.OutputEncoding = System.Text.Encoding.UTF8;
 
 return args switch
 {
+    // Лаб 7: підкоманди звітів. Перевіряється будь-яка позиція, тож "-- --file report-top" теж працює.
+    _ when args.Any(a => a.StartsWith("report", StringComparison.Ordinal)) => RunReports(args),
     ["--env", ..] => RunEnvironment(json: false),
     ["--json", ..] => RunEnvironment(json: true),
     ["--domain", ..] => RunDomain(),
@@ -368,6 +372,184 @@ static int RunSinks(string[] options)
     Console.WriteLine($"Журнал: {ChangeLog.Path}");
     return 0;
 }
+
+// Лаб 7: звіти через LINQ. Уся логіка запитів — у Core (ReportService), тут лише вибір підкоманди і вивід.
+// dotnet run --project src/Cli -f net10.0 -- report-top|report-low|report-groups|report-sum [--file]
+//   report-deferred | report-query | report-join | report-empty | report-bench
+static int RunReports(string[] options)
+{
+    ICatalogStore store = StoreFactory.Create(options);
+    var service = new CatalogService(store);
+    IReadOnlyList<Product> items = service.All(); // один знімок на всі звіти команди
+
+    // Перший аргумент, що не є прапорцем: --file / --cache з лаб 5 не стають назвою звіту.
+    string command = options.FirstOrDefault(a => !a.StartsWith("--")) ?? "report-top";
+
+    switch (command)
+    {
+        case "report-top":
+            Console.WriteLine("Топ-5 за залишком (за спаданням, при рівності — за SKU):");
+            PrintLines(ReportService.TopByQuantity(items, 5));
+            break;
+
+        case "report-low":
+            Console.WriteLine("Дефіцит, залишок < 10 (за зростанням залишку, далі за SKU):");
+            PrintLines(ReportService.LowStock(items, 10));
+            break;
+
+        case "report-groups":
+            Console.WriteLine("Групи за одиницею виміру (позицій і сумарний залишок):");
+            PrintGroups(ReportService.ByUnit(items));
+            break;
+
+        case "report-sum":
+            PrintTotals(ReportService.Totals(items));
+            break;
+
+        case "report-deferred":
+            RunDeferredDemo(items);
+            break;
+
+        case "report-query":
+            RunQuerySyntax(items);
+            break;
+
+        case "report-join":
+            RunJoin(service);
+            break;
+
+        case "report-empty":
+            RunEmpty();
+            break;
+
+        case "report-bench":
+            RunBenchmark();
+            break;
+
+        default:
+            Console.WriteLine("report-top | report-low | report-groups | report-sum | report-deferred | report-query | report-join | report-empty | report-bench");
+            return 1;
+    }
+    return 0;
+}
+
+// Крок 3: відкладене виконання. service.All() щоразу повертає новий знімок,
+// тому джерелом беремо локальний список, який можна змінити.
+static void RunDeferredDemo(IReadOnlyList<Product> items)
+{
+    var source = items.ToList();
+    IEnumerable<StockLine> query = ReportService.LowStockDeferred(source, 10); // запит побудовано, не виконано
+    Console.WriteLine($"Дефіцитних до змін: {query.Count()}");          // Count() перебирає source зараз
+
+    source.Add(Product.Create("tmp00001", "SKU-999", "Скоба", "шт", 3));
+    Console.WriteLine($"Дефіцитних після змін: {query.Count()}");       // запит виконано ще раз — бачить «Скобу»
+
+    List<StockLine> snapshot = query.ToList();                           // результат зафіксовано
+    source.Clear();
+    Console.WriteLine($"Після source.Clear(): query.Count() = {query.Count()}, snapshot.Count = {snapshot.Count}");
+}
+
+// Додаткове завдання 3: той самий звіт у синтаксисі методів і синтаксисі запитів.
+static void RunQuerySyntax(IReadOnlyList<Product> items)
+{
+    IReadOnlyList<GroupSummary> methods = ReportService.ByUnit(items);
+    IReadOnlyList<GroupSummary> query = ReportService.ByUnitQuery(items);
+    Console.WriteLine("ByUnitQuery — звіт у синтаксисі запитів:");
+    PrintGroups(query);
+    // record порівнюються за значенням, тож SequenceEqual перевіряє і склад, і порядок груп.
+    Console.WriteLine($"Збігається з ByUnit (синтаксис методів): {methods.SequenceEqual(query)}");
+}
+
+// Додаткове завдання 1: GroupJoin товарів із журналом подій Changed (лаб 6).
+static void RunJoin(CatalogService service)
+{
+    var journal = new List<CatalogChangedEventArgs>();
+    service.Changed += (_, e) => journal.Add(e); // подія наповнює другу колекцію
+
+    var cable = service.Add("SKU-301", "Патч-корд 1м", "шт", 30);
+    service.Receive(cable.Id, 20);
+    service.Issue(cable.Id, 15);
+    service.Issue("P-001", 2);
+    service.Receive("P-001", 10);
+    service.Receive("P-016", 100);
+    service.Issue("P-010", 4);
+
+    IReadOnlyList<Product> products = service.All();
+    Console.WriteLine($"Подій у журналі: {journal.Count}; товарів: {products.Count}");
+    Console.WriteLine("Найактивніші товари (товари × журнал подій):");
+    Console.WriteLine($"  {"SKU",-13} {"Назва",-38} {"Залишок",8} {"Операцій",9} {"Зміна",7}");
+    foreach (ProductActivity a in ReportService.MostActive(products, journal, 5))
+        Console.WriteLine($"  {a.Sku,-13} {a.Name,-38} {a.Quantity,8} {a.Operations,9} {a.NetDelta,7:+0;-0}");
+
+    int quiet = ReportService.Activity(products, journal).Count(a => a.Operations == 0);
+    Console.WriteLine($"Товарів без операцій (GroupJoin лишає їх з Operations = 0): {quiet}");
+}
+
+// Самоперевірка 3: звіти на порожньому джерелі не падають.
+static void RunEmpty()
+{
+    Product[] empty = [];
+    Console.WriteLine($"LowStock: {ReportService.LowStock(empty, 10).Count} рядків");
+    Console.WriteLine($"TopByQuantity: {ReportService.TopByQuantity(empty, 5).Count} рядків");
+    Console.WriteLine($"ByUnit: {ReportService.ByUnit(empty).Count} груп");
+    PrintTotals(ReportService.Totals(empty));
+}
+
+// Додаткове завдання 4: Stopwatch на 100 000 згенерованих записів.
+static void RunBenchmark()
+{
+    const int count = 100_000, threshold = 10, runs = 20;
+    IReadOnlyList<Product> data = SampleData.Generate(count);
+    Console.WriteLine($"Записів: {count:N0}; поріг дефіциту: {threshold}; повторів: {runs} (після прогріву)");
+
+    Measure("LowStock без проміжного ToList", () => ReportService.LowStockStreaming(data, threshold));
+    Measure("LowStock з ToList у середині", () => ReportService.LowStockMaterializedMidway(data, threshold));
+    Measure("TopByQuantity(5)", () => ReportService.TopByQuantity(data, 5));
+    Measure("ByUnit", () => ReportService.ByUnit(data));
+
+    static void Measure<T>(string title, Func<IReadOnlyList<T>> report)
+    {
+        int rows = report().Count; // прогрів: JIT і кеші; кількість рядків однакова в кожному повторі
+        var times = new List<double>(runs);
+        long allocated = 0;
+        for (int i = 0; i < runs; i++)
+        {
+            long before = GC.GetAllocatedBytesForCurrentThread();
+            var sw = Stopwatch.StartNew();
+            report();
+            sw.Stop();
+            allocated = GC.GetAllocatedBytesForCurrentThread() - before; // виділено пам'яті за один прогін
+            times.Add(sw.Elapsed.TotalMilliseconds);
+        }
+        Console.WriteLine($"  {title,-32} рядків {rows,6}  медіана {Median(times),6:F2} мс  мін {times.Min(),6:F2} мс  пам'ять {allocated / 1024.0,7:F0} КБ");
+    }
+
+    static double Median(List<double> values)
+    {
+        var sorted = values.Order().ToList();
+        return sorted[sorted.Count / 2];
+    }
+}
+
+static void PrintLines(IReadOnlyList<StockLine> lines)
+{
+    if (lines.Count == 0)
+    {
+        Console.WriteLine("  (порожньо)");
+        return;
+    }
+    foreach (StockLine l in lines)
+        Console.WriteLine($"  {l.Sku,-13} {l.Name,-38} {l.Quantity,6} {l.Unit}");
+}
+
+static void PrintGroups(IReadOnlyList<GroupSummary> groups)
+{
+    foreach (GroupSummary g in groups)
+        Console.WriteLine($"  {g.Key,-9} позицій: {g.Count,3}   сумарно: {g.TotalQuantity,6}");
+}
+
+static void PrintTotals((int Items, int Total, double Average, int Max) t) =>
+    Console.WriteLine($"  позицій {t.Items}, всього {t.Total}, середнє {t.Average:F2}, макс {t.Max}");
 
 static ImportResult<ProductDto> LoadDtos(string path, Action<string>? onSkipped = null) => Path.GetExtension(path).ToLowerInvariant() switch
 {

@@ -189,3 +189,52 @@ dotnet run --project src/Cli -f net10.0 -- --sinks         # INotificationSink �
 dotnet run --project src/Cli -f net10.0 -- data/sample.csv # імпорт з Action<string>
 dotnet run --project src/Cli -f net10.0 -- --service       # сценарій лаб 5
 ```
+
+### Лаб 7: звіти через LINQ
+
+- DTO: `src/Core/Reports/StockLine.cs`, `GroupSummary.cs`, `ProductActivity.cs` (record).
+- Запити: `src/Core/Reports/ReportService.cs` — приймають `IEnumerable<Product>`, повертають `IReadOnlyList<DTO>`; у `Program.cs` немає жодного `Where`/`GroupBy`, лише вибір підкоманди і вивід.
+- `SampleData` розширено до 20 записів: 6 одиниць виміру, 7 позицій із залишком < 10.
+
+| Метод | Питання | Оператори |
+| --- | --- | --- |
+| `LowStock(source, threshold)` | яких товарів менше за поріг? | Where, OrderBy, ThenBy, Select, ToList |
+| `TopByQuantity(source, n)` | які n позицій мають найбільший залишок? | TopBy (OrderByDescending, ThenBy, Take), Select |
+| `ByUnit(source)` | скільки позицій і одиниць у кожній одиниці виміру? | GroupBy, Count, Sum, Select, OrderByDescending |
+| `Totals(source)` | скільки всього, середній і максимальний залишок? | ToList, Count, Sum, Average, Max |
+| `LowStockDeferred(source, threshold)` | демо відкладеного виконання | Where, Select (без ToList) |
+| `Activity` / `MostActive` | скільки операцій було по кожному товару? | GroupJoin, Count, Sum, TopBy |
+
+```
+dotnet run --project src/Cli -f net10.0 -- report-top       # топ-5 за залишком
+dotnet run --project src/Cli -f net10.0 -- report-low       # дефіцит < 10
+dotnet run --project src/Cli -f net10.0 -- report-groups    # групи за одиницею
+dotnet run --project src/Cli -f net10.0 -- report-sum       # агрегати
+dotnet run --project src/Cli -f net10.0 -- report-deferred  # демо відкладеного виконання
+dotnet run --project src/Cli -f net10.0 -- report-empty     # звіти на порожньому джерелі
+dotnet run --project src/Cli -f net10.0 -- report-query     # дод. 3: синтаксис запитів
+dotnet run --project src/Cli -f net10.0 -- report-join      # дод. 1: GroupJoin товарів і журналу подій
+dotnet run --project src/Cli -f net10.0 -- report-bench     # дод. 4: Stopwatch на 100 000 записів
+dotnet run --project src/Cli -f net10.0 -- report-top --file  # прапорець не стає назвою звіту
+```
+
+**Коли виконується запит.** `ReportService.LowStockDeferred` лише будує ланцюжок `Where(...).Select(...)` і повертає його, не перебираючи джерело. Запит виконується щоразу, коли результат перебирають: у `foreach`, `Count()`, `ToList()`. У демо `report-deferred` перший `query.Count()` проходить список із 20 товарів і дає 7; після `source.Add(Скоба, 3)` другий `query.Count()` проходить той самий, уже змінений список ще раз і дає 8. `query.ToList()` фіксує результат: після `source.Clear()` `query.Count()` = 0, а `snapshot.Count` лишається 8. Решта методів `ReportService` закінчуються `ToList()`, тому звіт виконується один раз у момент виклику, і повторне читання результату в Cli запит не перезапускає.
+
+**Синтаксис запитів vs синтаксис методів** (`ByUnitQuery` vs `ByUnit`, `report-query` перевіряє, що результати однакові):
+
+```csharp
+// методи
+source.GroupBy(p => p.Unit, StringComparer.OrdinalIgnoreCase)
+      .Select(g => new GroupSummary(g.Key, g.Count(), g.Sum(p => p.Quantity)))
+      .OrderByDescending(s => s.TotalQuantity).ThenBy(s => s.Key, StringComparer.Ordinal)
+// запит
+from product in source
+group product by product.Unit into g
+let total = g.Sum(p => p.Quantity)
+orderby total descending, g.Key
+select new GroupSummary(g.Key, g.Count(), total)
+```
+
+Для групування синтаксис запитів читається природніше: `group ... by ... into g` і `let` дають ім'я проміжному значенню (сума рахується один раз і використовується і в `orderby`, і в `select`). Але в ньому не можна передати `StringComparer` у `group by` і `orderby` (без `IgnoreCase` "шт" і "ШТ" стали б різними групами), а `Take`, `Count`, `ToList` однаково доводиться дописувати методами. Тому в основних звітах лишено ланцюжок методів: він читається зліва направо і дає повний контроль над порівнянням рядків.
+
+**Додатково:** метод-розширення `TopBy<T>(this IEnumerable<T>, Func<T,int>, int, Func<T,string>)` у `src/Core/Reports/EnumerableExtensions.cs` використовується у `TopByQuantity` і `MostActive`. Бенчмарк `report-bench` (100 000 записів, медіана з 20 прогонів): `LowStock` без проміжного `ToList` ≈ 0,57 мс / 156 КБ, з `ToList` після кожного кроку ≈ 0,68 мс / 969 КБ — час майже той самий, але пам'яті в 6 разів більше через повні проміжні списки.
