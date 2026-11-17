@@ -24,6 +24,9 @@ return args switch
     ["--movement", ..] => RunMovement(),
     ["--catalog", ..] => RunCatalog(PathArg(Path.Combine("data", "catalog.csv"))),
     ["--import", ..] => RunImport(PathArg(Path.Combine("data", "sample.csv"))),
+    // Лаб 8: асинхронний імпорт (await прямо в top-level statements — Main не потрібен).
+    ["--import-async", ..] => await RunImportAsync(args),
+    ["--gen-big", ..] => await GenerateBigAsync(args),
     ["--service", ..] => RunService(args),
     ["--file" or "--cache", ..] => RunService(args),
     ["--events", ..] => RunEvents(args),
@@ -33,6 +36,93 @@ return args switch
 };
 
 string PathArg(string fallback) => args.Length > 1 ? args[1] : fallback;
+
+// Лаб 8: async/await, скасування, доменні винятки.
+// dotnet run --project src/Cli -f net10.0 -- --import-async [файл.json] [--file] [--stream]
+//                                            [--cancel-after мс] [--timeout мс]
+// Ланцюжок токена: cts.Token (тут) → CatalogService.ImportAsync → JsonCatalogImporter.LoadAsync.
+static async Task<int> RunImportAsync(string[] options)
+{
+    string dataPath = FileArg(options, Path.Combine("data", "supplies.json"));
+    ICatalogStore store = StoreFactory.Create(options);
+    var service = new CatalogService(store);
+    var importer = new JsonCatalogImporter();
+    int before = store.GetAll().Count;
+    int events = 0;
+    service.Changed += (_, _) => events++; // подія лаб 6: по одній на кожен доданий запис
+
+    // Cli створює джерело сигналу; Core лише перевіряє токен.
+    using var cts = new CancellationTokenSource();
+    // Обробник події — синхронна лямбда, лише подає сигнал. e.Cancel = true: процес не вбивається одразу,
+    // імпорт сам помітить скасування і завершиться через catch.
+    Console.CancelKeyPress += (_, e) => { e.Cancel = true; cts.Cancel(); };
+    if (IntOption(options, "--cancel-after") is int cancelMs)
+        cts.CancelAfter(TimeSpan.FromMilliseconds(cancelMs)); // демонстрація таймауту через той самий токен
+    int? timeoutMs = IntOption(options, "--timeout");        // дод. 2: окремий таймаут через зв'язані токени
+    bool streaming = options.Contains("--stream");           // дод. 1: IAsyncEnumerable
+
+    Console.WriteLine($"Імпорт {(streaming ? "потоковий" : "списком")}: {dataPath} → {store.GetType().Name} (Ctrl+C — скасувати)");
+    var progress = new ConsoleProgress(step: 25);            // дод. 3: IProgress<int>
+    var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+    int code = 1;
+    try
+    {
+        int added = (streaming, timeoutMs) switch
+        {
+            (true, _) => await service.ImportStreamAsync(importer.StreamAsync(dataPath), cts.Token),
+            (false, int t) => await service.ImportAsync(importer, dataPath, TimeSpan.FromMilliseconds(t), cts.Token, progress),
+            _ => await service.ImportAsync(importer, dataPath, cts.Token, progress)
+        };
+        Console.WriteLine($"Імпортовано записів: {added}");
+        code = 0;
+    }
+    // Порядок важливий: скасування — очікуваний результат, а не збій, тому перше і окремо.
+    catch (OperationCanceledException) { Console.WriteLine("Імпорт скасовано."); }
+    catch (TimeoutException ex)        { Console.WriteLine($"Таймаут: {ex.Message}"); }
+    catch (DomainException ex)         { Console.WriteLine($"Дані відхилено: {ex.Message}"); }
+    catch (StorageException ex)        { Console.WriteLine($"Помилка файлу: {ex.Message}"); }
+    catch (FileNotFoundException)      { Console.WriteLine($"Файл не знайдено: {dataPath}"); }
+
+    Console.WriteLine($"Подій Changed: {events}; у сховищі: {before} → {store.GetAll().Count}; час {stopwatch.ElapsedMilliseconds} мс");
+    return code;
+}
+
+// Великий файл для демонстрації скасування: dotnet run ... -- --gen-big [кількість]
+// Запис теж асинхронний: FileStream(useAsync: true) + SerializeAsync.
+static async Task<int> GenerateBigAsync(string[] options)
+{
+    int count = options.Length > 1 && int.TryParse(options[1], out int n) ? n : 500_000;
+    string path = Path.Combine("data", "big.json");
+    var dtos = SampleData.Generate(count).Select(p => p.ToDto() with { Quantity = Math.Max(1, p.Quantity) });
+
+    await using (var stream = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.None, 4096, useAsync: true))
+        await JsonSerializer.SerializeAsync(stream, dtos, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+
+    Console.WriteLine($"Записано {count} записів у {path} ({new FileInfo(path).Length / 1024 / 1024} МБ)");
+    return 0;
+}
+
+// Перший аргумент після команди, що не є прапорцем і не значенням --cancel-after / --timeout.
+static string FileArg(string[] options, string fallback)
+{
+    for (int i = 1; i < options.Length; i++)
+    {
+        if (options[i].StartsWith("--"))
+        {
+            if (options[i] is "--cancel-after" or "--timeout")
+                i++; // пропустити число після прапорця
+            continue;
+        }
+        return options[i];
+    }
+    return fallback;
+}
+
+static int? IntOption(string[] options, string name)
+{
+    int i = Array.IndexOf(options, name);
+    return i >= 0 && i + 1 < options.Length && int.TryParse(options[i + 1], out int value) ? value : null;
+}
 
 // Лаб 1-2: інформація про середовище.
 static int RunEnvironment(bool json)

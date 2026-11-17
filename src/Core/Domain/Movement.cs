@@ -59,13 +59,13 @@ public sealed class Movement
         ArgumentNullException.ThrowIfNull(product);
 
         if (Status != MovementStatus.Draft)
-            throw new InvalidOperationException($"Накладна {Number} у стані {Status}: рядки можна додавати лише в Draft");
+            throw new DomainException($"Накладна {Number} у стані {Status}: рядки можна додавати лише в Draft");
 
         if (amount <= 0)
             throw new ArgumentOutOfRangeException(nameof(amount), amount, "Кількість у рядку має бути більшою за нуль");
 
         if (_lines.Any(l => l.Product.Sku == product.Sku))
-            throw new InvalidOperationException($"Товар {product.Sku} вже є в накладній {Number}");
+            throw new DomainException($"Товар {product.Sku} вже є в накладній {Number}");
 
         _lines.Add(new MovementLine(product, amount));
     }
@@ -76,7 +76,7 @@ public sealed class Movement
         EnsureTransition(MovementStatus.Posted);
 
         if (_lines.Count == 0)
-            throw new InvalidOperationException($"Накладна {Number} порожня, проводити нічого");
+            throw new DomainException($"Накладна {Number} порожня, проводити нічого");
 
         Apply(Type);
         Status = MovementStatus.Posted;
@@ -96,7 +96,7 @@ public sealed class Movement
     private void EnsureTransition(MovementStatus target)
     {
         if (!CanTransition(Status, target))
-            throw new InvalidOperationException($"Накладна {Number}: перехід {Status} -> {target} заборонено");
+            throw new DomainException($"Накладна {Number}: перехід {Status} -> {target} заборонено");
     }
 
     // Усі рядки перевіряються ДО зміни першого товару, щоб проведення було «все або нічого».
@@ -106,7 +106,7 @@ public sealed class Movement
         {
             MovementLine? lacking = _lines.FirstOrDefault(l => l.Amount > l.Product.Quantity);
             if (lacking is not null)
-                throw new InvalidOperationException(
+                throw new DomainException(
                     $"Накладна {Number}: не можна видати {lacking.Amount}, залишок {lacking.Product.Sku} = {lacking.Product.Quantity}");
         }
 

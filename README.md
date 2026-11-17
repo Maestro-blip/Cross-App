@@ -136,18 +136,18 @@ src/Core/
 | Назва та одиниця виміру не порожні | ArgumentException | `Product.Create` |
 | Початковий залишок не від'ємний | ArgumentOutOfRangeException | `Product.Create` |
 | Кількість приходу / видачі > 0 | ArgumentOutOfRangeException | `Product.RegisterArrival`, `Product.Issue` |
-| Не можна видати більше, ніж є на залишку | InvalidOperationException | `Product.Issue` |
+| Не можна видати більше, ніж є на залишку | DomainException | `Product.Issue` |
 | `FromDto` проходить ті самі перевірки | як у `Create` | `Product.FromDto` -> `Create` |
 | Id і назва складу не порожні, місткість > 0 | ArgumentException / ArgumentOutOfRangeException | `Warehouse.Create` |
-| Сумарний залишок на складі ≤ місткості складу | InvalidOperationException | `StockService.Place`, `StockService.RegisterArrival` |
-| Товар розміщено лише на одному складі | InvalidOperationException | `StockService.Place` |
-| Прихід через сервіс лише для розміщеного товару | InvalidOperationException | `StockService.RegisterArrival` |
+| Сумарний залишок на складі ≤ місткості складу | DomainException | `StockService.Place`, `StockService.RegisterArrival` |
+| Товар розміщено лише на одному складі | DomainException | `StockService.Place` |
+| Прихід через сервіс лише для розміщеного товару | DomainException | `StockService.RegisterArrival` |
 | Номер накладної не порожній | ArgumentException | `Movement.Create` |
-| Кількість у рядку > 0, товар у накладній не повторюється | ArgumentOutOfRangeException / InvalidOperationException | `Movement.AddLine` |
-| Рядки додаються лише в стані Draft | InvalidOperationException | `Movement.AddLine` |
-| Порожню накладну провести не можна | InvalidOperationException | `Movement.Post` |
-| Дозволені лише переходи Draft->Posted, Draft->Cancelled, Posted->Cancelled | InvalidOperationException | `Movement.CanTransition` (switch expression) |
-| Проведення «все або нічого»: перевитрата за будь-яким рядком блокує всю накладну | InvalidOperationException | `Movement.Post` / `Movement.Cancel` |
+| Кількість у рядку > 0, товар у накладній не повторюється | ArgumentOutOfRangeException / DomainException | `Movement.AddLine` |
+| Рядки додаються лише в стані Draft | DomainException | `Movement.AddLine` |
+| Порожню накладну провести не можна | DomainException | `Movement.Post` |
+| Дозволені лише переходи Draft->Posted, Draft->Cancelled, Posted->Cancelled | DomainException | `Movement.CanTransition` (switch expression) |
+| Проведення «все або нічого»: перевитрата за будь-яким рядком блокує всю накладну | DomainException | `Movement.Post` / `Movement.Cancel` |
 
 Перевірка: у `src/Core/Domain` і `src/Core/Services` немає `Console.` і `File.`; `product.Quantity = -5` не компілюється (CS0200).
 
@@ -238,3 +238,41 @@ select new GroupSummary(g.Key, g.Count(), total)
 Для групування синтаксис запитів читається природніше: `group ... by ... into g` і `let` дають ім'я проміжному значенню (сума рахується один раз і використовується і в `orderby`, і в `select`). Але в ньому не можна передати `StringComparer` у `group by` і `orderby` (без `IgnoreCase` "шт" і "ШТ" стали б різними групами), а `Take`, `Count`, `ToList` однаково доводиться дописувати методами. Тому в основних звітах лишено ланцюжок методів: він читається зліва направо і дає повний контроль над порівнянням рядків.
 
 **Додатково:** метод-розширення `TopBy<T>(this IEnumerable<T>, Func<T,int>, int, Func<T,string>)` у `src/Core/Reports/EnumerableExtensions.cs` використовується у `TopByQuantity` і `MostActive`. Бенчмарк `report-bench` (100 000 записів, медіана з 20 прогонів): `LowStock` без проміжного `ToList` ≈ 0,57 мс / 156 КБ, з `ToList` після кожного кроку ≈ 0,68 мс / 969 КБ — час майже той самий, але пам'яті в 6 разів більше через повні проміжні списки.
+
+### Лаб 8: async/await, скасування, доменні винятки, unit-тести Core
+
+- `src/Core/DomainException.cs` — порушення бізнес-правила (видача понад залишок, немає товару, кількість у постачанні = 0, заборонений перехід накладної). Замінив `InvalidOperationException` у `Product`, `Movement`, `CatalogService`, `StockService`. Перевірки аргументів лишились `ArgumentException` / `ArgumentOutOfRangeException`.
+- `src/Core/StorageException.cs` — технічна помилка формату (зіпсований JSON), початковий `JsonException` у `InnerException`.
+- `src/Core/Abstraction/ICatalogImporter.cs` — `Task<IReadOnlyList<Product>> LoadAsync(string path, CancellationToken ct)`.
+- `src/Core/Storage/JsonCatalogImporter.cs` — `FileStream(useAsync: true)` + `JsonSerializer.DeserializeAsync`, `ct.ThrowIfCancellationRequested()` у циклі, поганий запис → `DomainException("Запис N: ...")`.
+- `CatalogService.ImportAsync(importer, path, ct, progress)` — ідемпотентний (наявні id пропускаються), подія `Changed` на кожен доданий запис.
+- Cli: `--import-async` — top-level `await`, Ctrl+C через `Console.CancelKeyPress`, окремі `catch` для скасування / таймауту / доменної / файлової помилки.
+- Тести: `tests/Core.Tests` (xUnit, посилається лише на Core) — 15 методів / 20 запусків.
+- Дані: `data/supplies.json` (17 постачань), `data/supplies-bad.json` (запис 3 з кількістю 0), `data/supplies-broken.json` (кількість — рядок, не JSON-число).
+
+**Запуск тестів**
+
+```
+dotnet test
+dotnet test --logger "console;verbosity=normal"     # список тестів
+dotnet test --collect:"XPlat Code Coverage"          # покриття (дод. 4)
+```
+
+**Імпорт і перевірка скасування**
+
+```
+dotnet run --project src/Cli -f net10.0 -- --import-async                            # Імпортовано записів: 17
+dotnet run --project src/Cli -f net10.0 -- --import-async data/supplies-bad.json     # Дані відхилено: Запис 3 ...
+dotnet run --project src/Cli -f net10.0 -- --import-async data/supplies-broken.json  # Помилка файлу: ... не є коректним JSON
+dotnet run --project src/Cli -f net10.0 -- --import-async --file                     # другий запуск — 0 (ідемпотентність)
+
+dotnet run --project src/Cli -f net10.0 -- --gen-big 500000                          # data/big.json, ~66 МБ (у .gitignore)
+dotnet run --project src/Cli -f net10.0 -- --import-async data/big.json              # натиснути Ctrl+C → Імпорт скасовано.
+dotnet run --project src/Cli -f net10.0 -- --import-async data/big.json --cancel-after 200   # cts.CancelAfter → Імпорт скасовано.
+dotnet run --project src/Cli -f net10.0 -- --import-async data/big.json --timeout 200        # дод. 2: Таймаут: ...
+dotnet run --project src/Cli -f net10.0 -- --import-async data/big.json --stream --cancel-after 200  # дод. 1
+```
+
+**Додатково:** потоковий імпорт `JsonCatalogImporter.StreamAsync` (`IAsyncEnumerable<Product>`, `[EnumeratorCancellation]`) + `CatalogService.ImportStreamAsync` (`--stream`); зв'язані токени `CreateLinkedTokenSource(ct, timeout)` у перевантаженні `ImportAsync(..., TimeSpan timeout, ...)` — таймаут стає `TimeoutException`, скасування користувачем лишається `OperationCanceledException`; `IProgress<int>` + `ConsoleProgress` у Cli; покриття — 26,5 % рядків Core загалом, `CatalogService` 73 %, `JsonCatalogImporter` 49 %.
+
+Самоперевірка: `grep -rnE '\.Result\b|\.Wait\(\)|async void' src tests` — порожньо; тести не читають `data/`; єдиний тест із диском пише в `Path.GetTempPath()` і видаляє файл у `finally`.

@@ -27,7 +27,7 @@ public sealed class StockService
         ArgumentNullException.ThrowIfNull(warehouse);
 
         if (_warehouseBySku.TryGetValue(product.Sku, out Warehouse? current))
-            throw new InvalidOperationException($"Товар {product.Sku} вже розміщено на складі {current.Id}");
+            throw new DomainException($"Товар {product.Sku} вже розміщено на складі {current.Id}");
 
         EnsureFits(warehouse, product.Quantity);
 
@@ -41,7 +41,7 @@ public sealed class StockService
         ArgumentNullException.ThrowIfNull(product);
 
         if (!_warehouseBySku.TryGetValue(product.Sku, out Warehouse? warehouse))
-            throw new InvalidOperationException($"Товар {product.Sku} не розміщено на жодному складі");
+            throw new DomainException($"Товар {product.Sku} не розміщено на жодному складі");
 
         if (amount > 0)
             EnsureFits(warehouse, amount);
@@ -53,7 +53,7 @@ public sealed class StockService
     {
         int free = FreeSpace(warehouse);
         if (amount > free)
-            throw new InvalidOperationException(
+            throw new DomainException(
                 $"Склад {warehouse.Id} переповнено: потрібно місця на {amount}, вільно {free} з {warehouse.Capacity}");
     }
 }
