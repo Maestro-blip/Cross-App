@@ -276,3 +276,76 @@ dotnet run --project src/Cli -f net10.0 -- --import-async data/big.json --stream
 **Додатково:** потоковий імпорт `JsonCatalogImporter.StreamAsync` (`IAsyncEnumerable<Product>`, `[EnumeratorCancellation]`) + `CatalogService.ImportStreamAsync` (`--stream`); зв'язані токени `CreateLinkedTokenSource(ct, timeout)` у перевантаженні `ImportAsync(..., TimeSpan timeout, ...)` — таймаут стає `TimeoutException`, скасування користувачем лишається `OperationCanceledException`; `IProgress<int>` + `ConsoleProgress` у Cli; покриття — 26,5 % рядків Core загалом, `CatalogService` 73 %, `JsonCatalogImporter` 49 %.
 
 Самоперевірка: `grep -rnE '\.Result\b|\.Wait\(\)|async void' src tests` — порожньо; тести не читають `data/`; єдиний тест із диском пише в `Path.GetTempPath()` і видаляє файл у `finally`.
+
+### Лаб 9: шляхи, JSON, конфігурація, secrets
+
+- `src/Core/Configuration/AppOptions.cs` — `AppOptions` (`EnvironmentName`, `Storage`, `Logging`, `Warehouse`), `StorageOptions.ResolveFullPath(baseDir)` через `Path.Combine` + `Path.GetFullPath`, каталог створюється автоматично.
+- `src/Core/Storage/CatalogJsonFile.cs` — спільний формат JSON (camelCase, кирилиця без `\uXXXX`), атомарний запис `.tmp` + `File.Move`, зіпсований файл → `StorageException` з номером рядка / запису.
+- `FileCatalogStore` — шлях приходить із конфігурації, читання/запис через `CatalogJsonFile`; `ICatalogStore` лишився синхронним.
+- `src/Cli/AppConfig.cs` — `ConfigurationBuilder` з `AppContext.BaseDirectory`; `config.Get<AppOptions>()`; `CROSSAPP_DATA_PATH`; secret `config["Integration:ApiKey"]` (друкується лише довжина).
+- `src/Cli/AppLog.cs` — консольний журнал із рівнем `Logging:MinimumLevel`.
+- Пакети `Microsoft.Extensions.Configuration.*` 10.x — лише в `src/Cli`, Core про них не знає.
+
+**Профілі** (обирається змінною `CROSSAPP_ENVIRONMENT`, за замовчуванням `Development`)
+
+| Профіль | Файл | Лог | Де дані |
+|---|---|---|---|
+| Development | `appsettings.Development.json` | `Debug` | `<bin>/data/items.json` (поруч зі збіркою) |
+| Production | `appsettings.Production.json` | `Warning` | `LocalApplicationData/CrossApp/items.json` (macOS: `~/Library/Application Support`, Windows: `%LOCALAPPDATA%`, Linux: `~/.local/share`) |
+
+**Порядок джерел** (пізніше перекриває раніше): `appsettings.json` → `appsettings.{Environment}.json` → user-secrets → змінні `CROSSAPP_*` → `--Ключ=значення` → окремо `CROSSAPP_DATA_PATH` (перекриває `Storage:DataPath`).
+
+**Ключі**
+
+| Ключ | За замовчуванням | Змінна середовища | Призначення |
+|---|---|---|---|
+| `EnvironmentName` | `Development` | `CROSSAPP_EnvironmentName` | назва профілю (для виводу) |
+| `Logging:MinimumLevel` | `Information` | `CROSSAPP_Logging__MinimumLevel` | `Debug` / `Information` / `Warning` / `Error` |
+| `Storage:Root` | `App` | `CROSSAPP_Storage__Root` | `App` = `AppContext.BaseDirectory`, `LocalAppData` = системний каталог даних |
+| `Storage:DataPath` | `data` | `CROSSAPP_Storage__DataPath` або `CROSSAPP_DATA_PATH` | відносний (від Root) або абсолютний каталог |
+| `Storage:FileName` | `items.json` | `CROSSAPP_Storage__FileName` | ім'я файлу каталогу |
+| `Warehouse:DefaultUnit` | `шт` | `CROSSAPP_Warehouse__DefaultUnit` | одиниця для порожнього `unit` під час імпорту |
+| `Integration:ApiKey` | — (secret) | `CROSSAPP_Integration__ApiKey` | лише user-secrets / env, **не** в appsettings |
+
+**Secret**
+
+```
+dotnet user-secrets init --project src/Cli                                  # уже зроблено: UserSecretsId у Cli.csproj
+dotnet user-secrets set "Integration:ApiKey" "local-dev-key" --project src/Cli
+dotnet user-secrets list --project src/Cli
+```
+
+Файл: macOS / Linux `~/.microsoft/usersecrets/<UserSecretsId>/secrets.json`, Windows `%APPDATA%\Microsoft\UserSecrets\<UserSecretsId>\secrets.json` — поза репозиторієм.
+
+**Запуск**
+
+```
+dotnet run --project src/Cli -f net10.0 -- config                    # ефективна конфігурація
+dotnet run --project src/Cli -f net10.0 -- export                    # 20 товарів → data/items.json
+dotnet run --project src/Cli -f net10.0 -- export --out copy.json    # у інший файл поруч
+dotnet run --project src/Cli -f net10.0 -- import                    # прочитати власний файл даних
+dotnet run --project src/Cli -f net10.0 -- import data/items-import.json   # додати 3 товари (порожній unit → шт)
+dotnet run --project src/Cli -f net10.0 -- import data/items-broken.json   # [err] ... пошкоджено, рядок 3
+dotnet run --project src/Cli -f net10.0 -- export --Storage:DataPath=tmp   # перевизначення аргументом
+cd src/Cli && dotnet run -f net10.0 -- export                         # той самий файл, що й з кореня
+```
+
+bash / zsh:
+
+```
+CROSSAPP_DATA_PATH=/tmp/crossapp-data dotnet run --project src/Cli -f net10.0 -- export
+CROSSAPP_ENVIRONMENT=Production dotnet run --project src/Cli -f net10.0 -- config
+CROSSAPP_Integration__ApiKey=from-env dotnet run --project src/Cli -f net10.0 -- export
+export CROSSAPP_Storage__FileName=stock.json   # до кінця сесії терміналу
+```
+
+PowerShell:
+
+```
+$env:CROSSAPP_DATA_PATH = "C:\Users\st\data"; dotnet run --project src/Cli -f net10.0 -- export
+$env:CROSSAPP_ENVIRONMENT = "Production"
+$env:CROSSAPP_Integration__ApiKey = "from-env"
+Remove-Item Env:CROSSAPP_DATA_PATH
+```
+
+Самоперевірка: `git grep -nF 'C:\' -- src` і `git grep local-dev-key` — порожньо; видалений `bin/.../data` створюється заново; `git status` після `user-secrets set` чистий; тести — 21 метод / 26 запусків.

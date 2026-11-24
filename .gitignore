@@ -481,3 +481,8 @@ $RECYCLE.BIN/
 # Vim temporary swap files
 *.swp
 data/big.json
+
+# Лаб 9: дані, що створюються під час роботи (items.json, items.json.tmp), і secrets
+/src/Cli/data/
+/data/items.json
+secrets.json

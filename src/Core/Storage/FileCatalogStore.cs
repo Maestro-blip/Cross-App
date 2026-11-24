@@ -1,40 +1,31 @@
-using System.Text.Json;
 using Core.Abstraction;
 using Core.Domain;
-using Core.Dto;
 
 namespace Core.Storage;
 
 // Сховище у файлі JSON: кеш у пам'яті, дозавантаження при першому зверненні,
 // запис на диск після кожної зміни. На диск ідуть DTO, назовні — Product.
+// Лаб 9: шлях приходить ззовні (з конфігурації, через Cli), формат і атомарний запис — у CatalogJsonFile.
+// Контракт ICatalogStore лишається синхронним, як і раніше.
 public sealed class FileCatalogStore(string path) : ICatalogStore
 {
-    private static readonly JsonSerializerOptions Options = new() { WriteIndented = true };
     private readonly Dictionary<string, Product> _cache = new(StringComparer.OrdinalIgnoreCase);
     private readonly string _path = Path.GetFullPath(path);
     private bool _loaded;
 
+    public string FilePath => _path;
+
     private void EnsureLoaded()
     {
         if (_loaded) return;
-        if (File.Exists(_path))
-        {
-            var dtos = JsonSerializer.Deserialize<List<ProductDto>>(File.ReadAllText(_path)) ?? [];
-            foreach (var dto in dtos)
-            {
-                var p = Product.FromDto(dto);
-                _cache[p.Id] = p;
-            }
-        }
+        if (!File.Exists(_path)) { _loaded = true; return; } // файлу ще немає — порожній каталог
+        _cache.Clear();
+        foreach (var product in CatalogJsonFile.Read(_path)) // повторно перевіряє інваріанти
+            _cache[product.Id] = product;
         _loaded = true;
     }
 
-    private void Flush()
-    {
-        Directory.CreateDirectory(Path.GetDirectoryName(_path)!);
-        File.WriteAllText(_path,
-            JsonSerializer.Serialize(_cache.Values.Select(p => p.ToDto()).ToList(), Options));
-    }
+    private void Flush() => CatalogJsonFile.Write(_path, _cache.Values); // .tmp + File.Move
 
     public IReadOnlyList<Product> GetAll()
     {

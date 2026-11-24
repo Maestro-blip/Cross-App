@@ -6,14 +6,24 @@ using Core.Import;
 using Core.Services;
 using Core.Abstraction;
 using Core.Storage;
+using Core.Configuration;
 using Core.Events;
 using Core.Reports;
 using System.Diagnostics;
 
 Console.OutputEncoding = System.Text.Encoding.UTF8;
 
+// Лаб 9: конфігурація збирається один раз на старті; шлях до даних отримує фабрика сховищ.
+AppSettings settings = AppConfig.Load(args);
+AppLog.Configure(settings.Options.Logging.MinimumLevel);
+StoreFactory.UseDataPath(settings.DataFile);
+
 return args switch
 {
+    // Лаб 9: конфігурація, експорт / імпорт усієї колекції в JSON.
+    ["config", ..] => RunConfig(settings),
+    ["export", ..] => RunExport(settings, args),
+    ["import", ..] => RunImportJson(settings, args),
     // Лаб 7: підкоманди звітів. Перевіряється будь-яка позиція, тож "-- --file report-top" теж працює.
     _ when args.Any(a => a.StartsWith("report", StringComparison.Ordinal)) => RunReports(args),
     ["--env", ..] => RunEnvironment(json: false),
@@ -36,6 +46,125 @@ return args switch
 };
 
 string PathArg(string fallback) => args.Length > 1 ? args[1] : fallback;
+
+// Лаб 9: спільна «шапка» команд — звідки взято налаштування. Secret не друкуємо, лише факт наявності.
+static void PrintHeader(AppSettings s)
+{
+    Console.WriteLine($"Файл даних : {s.DataFile}");
+    Console.WriteLine(s.ApiKey is null ? "ApiKey: не заданий" : $"ApiKey: присутній, довжина {s.ApiKey.Length}");
+}
+
+// dotnet run --project src/Cli -f net10.0 -- config
+static int RunConfig(AppSettings s)
+{
+    AppOptions o = s.Options;
+    Console.WriteLine($"Середовище : {o.EnvironmentName} (CROSSAPP_ENVIRONMENT={Environment.GetEnvironmentVariable("CROSSAPP_ENVIRONMENT") ?? "—"})");
+    Console.WriteLine($"Лог        : {o.Logging.MinimumLevel}");
+    Console.WriteLine($"Storage    : Root={o.Storage.Root}, DataPath={o.Storage.DataPath}, FileName={o.Storage.FileName}");
+    Console.WriteLine($"CROSSAPP_DATA_PATH = {Environment.GetEnvironmentVariable("CROSSAPP_DATA_PATH") ?? "—"}");
+    Console.WriteLine($"Warehouse:DefaultUnit = {o.Warehouse.DefaultUnit}");
+    Console.WriteLine($"Поточний каталог (cwd) : {Environment.CurrentDirectory}");
+    Console.WriteLine($"AppContext.BaseDirectory: {AppContext.BaseDirectory}");
+    PrintHeader(s);
+    AppLog.Debug("рівень Debug увімкнено (профіль Development)");
+    AppLog.Info("рівень Information увімкнено");
+    AppLog.Warn("рівень Warning увімкнено");
+    return 0;
+}
+
+// Експорт усієї колекції в JSON (атомарно). Джерело — те саме сховище, що й у інших командах:
+// за замовчуванням 20 товарів у пам'яті, з --file — уже збережений каталог.
+// dotnet run --project src/Cli -f net10.0 -- export [--out інший.json]
+static int RunExport(AppSettings s, string[] options)
+{
+    PrintHeader(s);
+    string target = OutPath(s, options);
+    IReadOnlyList<Product> items = StoreFactory.Create(options).GetAll();
+    AppLog.Debug($"запис {items.Count} записів у {target}.tmp → File.Move → {Path.GetFileName(target)}");
+    try
+    {
+        CatalogJsonFile.Write(target, items);
+    }
+    catch (IOException ex)
+    {
+        AppLog.Error($"Не вдалося записати {target}: {ex.Message}");
+        return 1;
+    }
+    catch (UnauthorizedAccessException ex)
+    {
+        AppLog.Error($"Немає доступу до {target}: {ex.Message}");
+        return 1;
+    }
+    Console.WriteLine($"Експортовано {items.Count} записів{(target == s.DataFile ? "" : $" у {target}")}.");
+    return 0;
+}
+
+// Імпорт колекції з JSON.
+//   import             — прочитати власний файл даних і показати вміст (перевірка «експорт → імпорт»);
+//   import файл.json   — додати з файлу нові товари до каталогу у файлі даних (наявні id пропускаються).
+// Порожнє поле unit замінюється на Warehouse:DefaultUnit.
+static int RunImportJson(AppSettings s, string[] options)
+{
+    PrintHeader(s);
+    string? source = options.Skip(1).FirstOrDefault(a => !a.StartsWith("--", StringComparison.Ordinal));
+    string path = source is null ? s.DataFile : Path.GetFullPath(source);
+    string defaultUnit = s.Options.Warehouse.DefaultUnit;
+
+    if (!File.Exists(path))
+    {
+        Console.WriteLine($"Файл не знайдено: {path}. Спершу виконайте export.");
+        return 1;
+    }
+
+    IReadOnlyList<Product> items;
+    try
+    {
+        items = CatalogJsonFile.Read(path, dto => string.IsNullOrWhiteSpace(dto.Unit) ? dto with { Unit = defaultUnit } : dto);
+    }
+    catch (StorageException ex)
+    {
+        AppLog.Error(ex.Message);
+        AppLog.Debug($"причина: {ex.InnerException?.GetType().Name}: {ex.InnerException?.Message}");
+        return 1;
+    }
+
+    Console.WriteLine($"Прочитано {items.Count} записів з {path}");
+    foreach (Product p in items.Take(5))
+        Console.WriteLine($"  {p.Id,-9} {p.Sku,-13} {p.Name,-38} {p.Quantity,5} {p.Unit}");
+
+    if (source is null)
+        return 0;
+
+    var store = new FileCatalogStore(s.DataFile);
+    int added = 0;
+    try
+    {
+        foreach (Product p in items)
+        {
+            if (store.GetById(p.Id) is not null)
+                continue;
+            store.Add(p);
+            added++;
+        }
+    }
+    catch (StorageException ex)
+    {
+        AppLog.Error(ex.Message);
+        return 1;
+    }
+    Console.WriteLine($"Імпортовано нових: {added}, пропущено наявних: {items.Count - added}; у каталозі: {store.GetAll().Count}");
+    return 0;
+}
+
+// --out файл: відносний шлях рахується від каталогу файлу даних, а не від cwd.
+static string OutPath(AppSettings s, string[] options)
+{
+    int i = Array.IndexOf(options, "--out");
+    if (i < 0 || i + 1 >= options.Length)
+        return s.DataFile;
+    string value = options[i + 1];
+    return Path.IsPathRooted(value) ? value : Path.GetFullPath(Path.Combine(Path.GetDirectoryName(s.DataFile)!, value));
+}
 
 // Лаб 8: async/await, скасування, доменні винятки.
 // dotnet run --project src/Cli -f net10.0 -- --import-async [файл.json] [--file] [--stream]
